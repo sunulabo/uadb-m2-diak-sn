@@ -1,0 +1,9 @@
+pandas
+numpy
+kafka-python
+pyhive
+happybase
+scikit-learn
+streamlit
+apache-airflow
+pyspark
