@@ -1,0 +1,12 @@
+pyspark==3.3.2
+kafka-python==2.0.2
+pandera==0.13.4
+pandas==1.5.3
+numpy==1.23.5
+scipy==1.10.1
+matplotlib==3.6.3
+seaborn==0.11.2
+faker==18.13.0
+happybase==1.2.0
+pyhive==0.7.0
+mlflow==2.3.2
