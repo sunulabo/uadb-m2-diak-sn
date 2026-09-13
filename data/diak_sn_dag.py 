@@ -1,0 +1,60 @@
+# dags/diak_sn_dag.py — DAG Airflow Diak-SN 
+from airflow import DAG 
+from airflow.operators.python import PythonOperator, BranchPythonOperator 
+from airflow.operators.dummy  import DummyOperator 
+from airflow.utils.dates      import days_ago 
+from datetime import timedelta 
+import subprocess, logging 
+  
+logger = logging.getLogger('diak_dag') 
+default_args = {'owner':'seye_ahmed','retries':2,'retry_delay':timedelta(minutes=5)} 
+  
+def check_epidemie(**ctx): 
+    from pyhive import hive 
+    conn = hive.Connection(host='hive-metastore', port=10000) 
+    cur  = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM diak_sn.vue_alertes_districts WHERE 
+statut='CRITIQUE'") 
+    n = cur.fetchone()[0] 
+    logger.info(f'Districts en statut CRITIQUE : {n}') 
+    return 'retrain_model' if n > 1 else 'generate_recommendations' 
+  
+def retrain_model(**ctx): 
+    subprocess.run(['spark-submit','--master','spark://spark-master:7077', 
+        '/opt/models/train_pic_consult.py','--mode','train'],check=True,timeout=3600) 
+  
+def generate_recommendations(**ctx): 
+    from pyhive import hive 
+    import happybase 
+    conn_hbase = happybase.Connection('hbase',port=9090); conn_hbase.open() 
+    conn_hive  = hive.Connection(host='hive-metastore',port=10000) 
+    cur = conn_hive.cursor() 
+    cur.execute('SELECT district,pathologie,nb_cas_7j,statut FROM 
+diak_sn.vue_alertes_districts WHERE statut != "NORMAL"') 
+    table = conn_hbase.table(b'diak:alertes_epidemie') 
+    from datetime import datetime 
+    for row in cur.fetchall(): 
+        dist,path,nb,statut = row 
+        table.put(f'{dist}_{path}'.encode(), { 
+            b'alerte:district':  dist.encode(), 
+            b'alerte:pathologie':path.encode(), 
+            b'alerte:nb_cas':    str(nb).encode(), 
+            b'alerte:statut':    statut.encode(), 
+            b'alerte:ts':        datetime.utcnow().isoformat().encode(), 
+        }) 
+    conn_hbase.close() 
+  
+with DAG('diak_sn_monitoring', default_args=default_args, 
+         schedule_interval='0 6 * * *', start_date=days_ago(1), catchup=False, 
+         tags=['diak-sn','sante','epidemie']) as dag: 
+    start  = DummyOperator(task_id='start') 
+    end    = DummyOperator(task_id='end') 
+    branch = BranchPythonOperator(task_id='check_epidemie', 
+                                   python_callable=check_epidemie,provide_context=True) 
+    t_train= PythonOperator(task_id='retrain_model', 
+                             python_callable=retrain_model,provide_context=True) 
+    t_reco = PythonOperator(task_id='generate_recommendations', 
+                             
+python_callable=generate_recommendations,provide_context=True) 
+    start >> branch >> [t_train, t_reco] 
+    t_train >> t_reco >> end; t_reco >> end 
